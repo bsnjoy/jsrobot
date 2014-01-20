@@ -76,11 +76,11 @@ function robotMove(left, right) {
     clearTimeout( lastTimer );
     if ( left == right) {
         cmdSend( "G", left );
-        lastTimer = setTimeout( robotStopMove, 300);
+        lastTimer = setTimeout( robotStopMove, 200);
     } else {
         cmdSend( "L", left );
         cmdSend( "R", right );
-        lastTimer = setTimeout( robotStopMove, 200);
+        lastTimer = setTimeout( robotStopMove, 100);
     }
 }
 
