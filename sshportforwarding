@@ -1,0 +1,2 @@
+nohup ssh -R 8081:localhost:8081 delatel -NC &
+nohup ssh -R 8080:localhost:8080 delatel -NC &

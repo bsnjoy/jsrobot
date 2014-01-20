@@ -1,0 +1,375 @@
+<html>
+<head>
+<meta http-equiv="Content-type" content="text/html; charset=utf-8" />
+    <title>Робот-Катюша!</title>
+    <script src="http://code.jquery.com/jquery-1.9.1.js"></script>
+</head>
+<style type="text/css">
+#control
+{
+    width:640px;
+    height:480px;
+    float: left;
+}
+#settings
+{
+    margin-left: 690px;
+}
+#consolecmd
+{
+    width:500px;
+}
+#consolereply
+{
+    width:640px;
+    height:100px;
+}
+</style>
+<body oncontextmenu="return false;">
+<h1>Робот-Катюша приветствует тебя!</h1>
+<div id="control">
+<img src="http://192.168.1.106:8080/?action=stream" width=640 height=480>
+</div>
+<div id="settings">
+<div id="napr1"></div>
+<div id="napr2"></div>
+    <input type="checkbox" id="mouse_control_head">
+    <label for="mouse_control_head"> <b>Управление головой мышкой</b></label> (Движение мышки по картинке = поворот головы)
+    <br />
+    <input type="checkbox" id="mouse_control_move" checked>
+    <label for="mouse_control_move"> <b>Управление движением мышкой</b></label> (Клик мышки по картинке = движение робота, Левая кнопка - движение вперёд, Правая - назад, Скролл - поворот)
+    <br />
+    <input type="checkbox" id="center_head_horizontal" checked>
+    <label for="center_head_horizontal"><b>Центрирование головы по горизонтали</b></label> (Автоматическое выравнивание головы по центру при движении)
+    <h1>Как управлять роботом</h1>
+    <p>
+    <ul>
+<li><b>Стрелка вперёд/назад</b> - движение робота вперёд/назад.</li>
+<li><b>Стрелка вправо/влево</b> - поворот робота по часовой/против часовой стрелки.</li>
+<li><b>W</b> - поднять голову вверх</li>
+<li><b>S</b> - опустить голову вниз</li>
+<li><b>A</b> - повернуть голову влево</li>
+<li><b>D</b> - повернуть голову вправо</li>
+<li><b>C</b> - центрировать голову</li>
+</ul>
+    </p>
+</div>
+<div>
+Консоль: <input id="consolecmd" type="text"><input id="consolesend" type="button" value="Send">
+</div>
+<div><textarea id="consolereply"></textarea></div>
+<div id="log"></div>
+<div id="results"></div>
+<hr/>
+    <script>
+    var speed = 200;
+
+    function Log( txt ) {
+        $("#log").html("<div>" + txt + "</div>");    
+    }
+
+    function execCommand( cmd ) {
+        if( cmd[0]=="~" ) {
+            var R1 = 9.3; // kOm
+            var R2 = 27; // kOm
+            var volt_per_unit = 0.004883; // 5V/1024 values = 0,004883 V/value
+            var voltratio = volt_per_unit * (R1 + R2)/R1;
+            var value = parseInt( cmd.substr( 2, 3 ), 16 );
+            var volt = value*voltratio;
+
+            if( cmd[1]=="0" ) {
+//                console.log("Напряжение аккумулятора:" + volt + " V");
+                $("#napr1").html("<div>Напряжение аккумулятора:" + volt + " V</div>");    
+            }
+            if( cmd[1]=="1" ) {
+//                console.log("Напряжение зарядки:" + volt + " V");
+                $("#napr2").html("<div>Напряжение зарядки:" + volt + " V</div>");    
+            }
+
+        }
+    }
+
+
+
+// Format of robot message in Regular Expression
+    var regex = /[^0-9a-fA-F][0-9a-fA-F]{4}/g;
+    var message_buffer = "";
+// Extract messages from buffer
+    function processMessageBuffer(data) {
+        if(data.length!=0) {
+            message_buffer += data;
+            var commands = message_buffer.match(regex);
+            for( n in commands ) {
+//                console.log(commands[n]);
+                execCommand(commands[n]);
+            }
+            message_buffer = message_buffer.substr( -4 ); 
+        }  
+    }
+
+    // Send data to server to send it directly to COM-port
+    function robotMove( left, right ) {
+        $.ajax({
+            type: 'POST',
+            url: 'robotMove',
+            data: '{"left":"' + left + '","right":"' + right + '"}',
+            success: function(data){
+                $('#results').html(data);
+            }
+        });
+    }
+ 
+
+// Send data to server to send it directly to COM-port
+    function serialSend(value) {
+        $.ajax({
+            type: 'POST',
+            url: 'serialsend',
+            data: value,
+            success: function(data){
+                $('#results').html(data);
+            }
+        });
+    }
+    // Use long-polling algoritm to receive data from server (serial port)
+    function serialReceive() {
+        $.ajax({
+            type: 'GET',
+	    cache: false,
+            url: 'serialreceive',
+            success: function(data) {
+               $('#consolereply').val( $('#consolereply').val() + data );
+               $('#consolereply').scrollTop($('#consolereply')[0].scrollHeight);
+               processMessageBuffer(data);
+               serialReceive();
+            },
+            error: function (xhr, ajaxOptions, thrownError) {
+                setTimeout(serialReceive(), 500);
+            }
+        });
+    }
+
+        
+// Send command to robot directly.
+    function cmdSend(cmd, value) {
+        if( value > 0xFFFF ) {
+            value = 0xFFFF;
+        }
+        if (value < 0)  {
+            value = 0xFFFF + value + 1;
+        }
+        var hex = Math.round(value).toString(16);
+        var cmdsize = 4;
+        while(hex.length < cmdsize) {
+            hex = "0" + hex;
+        }
+
+        serialSend( cmd + hex );
+    }
+
+// Store position of servo to send data only when position is changed
+    var headPosH=0;
+    var headPosV=0;
+// Boarders of head-servo movements
+    var headHorizontalMin = 10;
+    var headHorizontalMax = 245;
+    var headVerticalMin = 20;
+    var headVerticalMax = 179;
+
+    function moveHeadHorizontal( pos ) {
+        if( pos < headHorizontalMin) {
+            pos = headHorizontalMin;
+            Log( "Правее некуда! ");
+        }
+        if( pos > headHorizontalMax ) {
+            pos = headHorizontalMax;
+            Log( "Левее некуда!" );
+        }
+        if( headPosH != pos ) {
+            headPosH = pos;
+            cmdSend( "H", headPosH );
+            Log( "ОК");
+        }
+    }
+    
+    function moveHeadVertical( pos ) {
+        if( pos < headVerticalMin ) {
+            pos = headVerticalMin;
+            Log( "Выше некуда! ");
+        }
+        if( pos > headVerticalMax) {
+            pos = headVerticalMax;
+            Log( "Ниже некуда! ");
+        }
+        if( headPosV != pos ) {
+            headPosV = pos;
+            cmdSend( "V", headPosV );
+            Log( "ОК");
+        }
+    }
+    function centerHeadVertical() {
+        moveHeadVertical( 0x0087 );
+    }
+    function centerHeadHorizontal() {
+        moveHeadHorizontal( 0x0058 );
+    }
+    var lastTimer = 0;
+    function robotRotate( pos ) {
+        robotMove( -pos, pos );
+        clearInterval( lastTimer );
+        lastTimer = setInterval(function() {
+            robotMove( -pos, pos );
+        }, 150 );
+    }
+    function robotGo( pos ) {
+        robotMove( pos, pos );
+        clearInterval( lastTimer );
+        lastTimer = setInterval(function() {
+            robotMove( pos, pos );
+        }, 200 );
+    }
+
+     
+    function robotStopMove() {
+        clearInterval( lastTimer );
+    }
+
+
+
+
+   // Rotate head, when moving mouse on image   
+    $("#control").mousemove(function(event) {
+        if ($("#mouse_control_head").is(":checked")) {
+
+            //var msg = "Handler for .mousemove() called at ";
+            var X = (event.pageX - this.offsetLeft);
+            var Y = (event.pageY - this.offsetTop + 2);
+        	var headPosNewH = Math.round( 255-X/640*255 );
+    	    var headPosNewV = Math.round( Y/480*255 );
+            //msg += X + ", " + Y;
+            //$("#log").html("<div>" + msg + "</div>");
+    	    moveHeadHorizontal( headPosNewH );
+    	    moveHeadVertical( headPosNewV );
+        }	    
+    });
+
+    $("#control").mousedown(function(e) {
+        //$("#log").html("<div>Button:" + e.button + "</div>");
+        if ($("#mouse_control_move").is(":checked")) {
+            if (e.button==0) {
+                robotGo( speed );
+            } else {
+                robotGo( -speed );
+            }
+        }
+    });
+    
+    $("#control").mouseup(function() {
+        if ($("#mouse_control_move").is(":checked")) {
+            robotStopMove();
+        }
+    });
+    
+    function sendConsoleCmd() {
+        serialSend( $('#consolecmd').val() );
+        $('#consolecmd').val("");
+    }
+    var i=0;
+    var rotating=0;
+    
+    $('#control').bind('mousewheel', function(e){
+        if ($("#mouse_control_move").is(":checked")) {
+            i=i+1;
+            if(e.originalEvent.wheelDelta /120 > 0) {
+                robotRotate( speed );
+//                $(this).text('scrolling up !'+i);
+            }
+            else{
+                robotRotate( -speed );
+//                $(this).text('scrolling down !');
+            }
+            if(rotating == 0) {
+                rotating = 1;
+                setTimeout( function() {
+                    rotating = 0;
+                    robotStopMove();
+                }, 100 );
+            }
+        }
+    });
+
+    $("#consolesend").click(function(e) {
+        sendConsoleCmd();
+    });
+
+
+    $("#consolecmd").keyup(function(e) {
+        if (e.keyCode == '13') {
+            sendConsoleCmd();
+        }
+    });
+
+    $( document ).ready(function() {
+        Log ("OK");
+        centerHeadHorizontal();
+        centerHeadVertical();
+        serialSend("=0100=1100");
+
+        $('body').keydown(function (e) {
+            if ($(e.target).is(':not(input, textarea)')) {
+                switch(e.keyCode) {
+                case 83: // S
+    	            moveHeadVertical( headPosV+1 );
+                    break;
+                case 87: // W
+    	            moveHeadVertical( headPosV-1 );
+                    break;
+                case 65: // A
+    	            moveHeadHorizontal( headPosH + 1 );
+                    break;
+                case 68: // D
+    	            moveHeadHorizontal( headPosH - 1 );
+                    break;
+                case 67: // C
+                    centerHeadHorizontal();
+                    centerHeadVertical();
+                    break;
+                case 38: //UP
+                    centerHeadHorizontal();
+                    robotGo( speed );
+                    break;
+                case 40: //Down
+                    robotGo( -speed );
+                    break;
+                case 37: //Left
+                    robotRotate( speed );
+                    break;
+                case 39: //Right
+                    robotRotate( -speed );
+                    break;
+                }
+            }    
+        
+        });
+
+        $('body').keyup(function (e) {
+            if ($(e.target).is(':not(input, textarea)')) {
+                switch(e.keyCode) {
+                case 38: //UP
+                case 40: //Down
+                case 37: //Left
+                case 39: //Right
+                    robotStopMove();
+                    break;
+                }
+            }
+//            $("#log").html("<div>Button:" + e.keyCode + "</div>");
+        });
+        // Start receiving data
+        serialReceive();
+    });
+
+    </script>
+
+</body>
+</html>
